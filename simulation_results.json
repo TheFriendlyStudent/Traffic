@@ -1,0 +1,51 @@
+{
+  "scenario": {
+    "closed_road": "CT-94",
+    "alternative_routes": 5
+  },
+  "impact_summary": {
+    "closed_road": "CT-94",
+    "closed_segments": 153,
+    "total_closed_volume": 1761500.0,
+    "avg_increase_percent": 7072.223121745827,
+    "max_increase_percent": 149608.50411532714,
+    "most_impacted_roads": [
+      {
+        "road": "WICKHAM RD NO 1",
+        "original_aadt": 2400.0,
+        "new_aadt": 66833.8475104926,
+        "redirected_traffic": 64433.847510492604,
+        "percent_increase": 2684.743646270525
+      },
+      {
+        "road": "2-W-18",
+        "original_aadt": 4200.0,
+        "new_aadt": 63227.213993607154,
+        "redirected_traffic": 59027.213993607154,
+        "percent_increase": 1405.4098569906464
+      },
+      {
+        "road": "HEMLOCK HILL DR",
+        "original_aadt": 38.0,
+        "new_aadt": 47066.48741479462,
+        "redirected_traffic": 47028.48741479462,
+        "percent_increase": 123759.17740735426
+      },
+      {
+        "road": "VILLAGE PL",
+        "original_aadt": 624.0,
+        "new_aadt": 46436.306545909385,
+        "redirected_traffic": 45812.306545909385,
+        "percent_increase": 7341.715792613684
+      },
+      {
+        "road": "STRICKLAND ST",
+        "original_aadt": 969.0,
+        "new_aadt": 44947.97779185689,
+        "redirected_traffic": 43978.97779185689,
+        "percent_increase": 4538.594199366036
+      }
+    ]
+  },
+  "vc_impact": {}
+}

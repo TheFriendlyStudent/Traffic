@@ -1,130 +1,136 @@
 #!/usr/bin/env python3
 """
-Script to fetch traffic data from ArcGIS Experience and associated PDFs from OnBase.
+Traffic Count PDF Downloader - CORRECT API Pattern
+Uses the proper two-step process:
+1. POST to get document metadata (JSON response)
+2. Download PDF using returned ID
 
-Usage:
-    python fetch_traffic_data.py                           # Fetch ArcGIS data
-    python fetch_traffic_data.py --doc-id <document_id>   # Fetch specific document
-    python fetch_traffic_data.py --batch                  # Fetch batch of documents
+Example working request:
+  POST https://onbasepublic.glastonbury-ct.gov/PublicAccess/api/Document/{doc_hash}/
+  Headers: Content-Type: application/json, etc.
+  Body: {}
+  Response: {"ID": "...", "Size": 33288, "ViewerMode": "PDF", ...}
 """
 
-import os
-import json
 import requests
-import subprocess
-from pathlib import Path
-from typing import List, Dict, Any, Optional
+import json
 import time
-from urllib.parse import quote
+from pathlib import Path
+from typing import List, Dict, Optional
 import sys
 import argparse
+from urllib.parse import quote
 
-# Configuration
-ARCGIS_ITEM_ID = "dcd740154f9d4b79a3f6ad094b7834d1"
-ARCGIS_API_BASE = "https://experience.arcgis.com/api/experience"
-ONBASE_API_URL = "https://onbasepublic.glastonbury-ct.gov/PublicAccess/api/Document"
 OUTPUT_DIR = Path("traffic_data")
-MAX_RETRIES = 3
-TIMEOUT = 30
-
-# Create output directory
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-def fetch_arcgis_data():
-    """Fetch data from ArcGIS Experience API."""
-    print("Fetching ArcGIS Experience data...")
-    
-    # Try to fetch the experience configuration
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-    
-    try:
-        # Note: Direct API access may not be available
-        # The ArcGIS Experience is JavaScript-based and requires browser rendering
-        print("⚠ ArcGIS Experience API requires browser (JavaScript rendering)")
-        print("  To extract document IDs: use browser DevTools Network tab")
-        print("  Or manually inspect the feature data from the map interface")
-        return None
-    except Exception as e:
-        print(f"⚠ Could not fetch ArcGIS config: {e}")
-        return None
+# Headers matching the working curl command
+ONBASE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Content-Type": "application/json",
+    "Connection": "keep-alive",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+    "Priority": "u=0",
+    "TE": "trailers"
+}
 
-def fetch_feature_service_data():
-    """
-    Fetch data from the feature service referenced in the experience.
-    The data source appears to be: dataSource_1-19428a2e2e0-layer-4-1:1134
-    """
-    print("\nFetching feature service data...")
+ONBASE_API = "https://onbasepublic.glastonbury-ct.gov/PublicAccess/api/Document"
+TIMEOUT = 30
+
+def fetch_segments() -> List[Dict]:
+    """Fetch all segments from ArcGIS."""
+    print("📍 Querying ArcGIS Map Server for segments...")
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json"
+    map_server_url = "https://gisarc2022.glastonbury-ct.gov/server/rest/services/GlastonburyPublic/StreetsExB/MapServer/1/query"
+    params = {
+        "where": "1=1",
+        "outFields": "*",
+        "returnGeometry": "false",
+        "f": "json"
     }
     
     try:
-        # Common ArcGIS REST API endpoints
-        # The experience likely references a public feature service
-        feature_service_url = "https://services.arcgis.com/sharing/rest/content/items"
-        
-        params = {
-            "f": "json",
-            "token": ""
-        }
-        
-        response = requests.get(feature_service_url, headers=headers, params=params, timeout=10)
+        response = requests.get(map_server_url, params=params, timeout=30)
         response.raise_for_status()
-        
         data = response.json()
-        print(f"✓ Retrieved feature service data")
-        return data
+        features = data.get("features", [])
+        print(f"✅ Found {len(features)} segments\n")
+        return features
     except Exception as e:
-        print(f"⚠ Feature service fetch failed: {e}")
+        print(f"❌ Error fetching segments: {e}\n")
+        return []
+
+
+def get_document_metadata(doc_hash: str) -> Optional[Dict]:
+    """
+    Step 1: POST to get document metadata.
+    
+    This returns JSON with document info like:
+    {
+        "ID": "Ab9yIBtXbJ0q8vdKSDMdvFilsNLvÁKU7isUhJgZM5YRTS5IGrU7ZfIS1gDSmÁ5ukJz9Á3Wd9Qb42waCdRYGrzWk=",
+        "Size": 33288,
+        "ViewerMode": "PDF",
+        "IsAboveDownloadThreshold": false
+    }
+    """
+    
+    try:
+        url = f"{ONBASE_API}/{doc_hash}/"
+        
+        # Set Origin and Referer
+        headers = ONBASE_HEADERS.copy()
+        headers["Origin"] = "https://onbasepublic.glastonbury-ct.gov"
+        
+        response = requests.post(
+            url,
+            headers=headers,
+            json={},
+            timeout=TIMEOUT,
+            verify=False
+        )
+        
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                return data
+            except:
+                return None
+        
+        return None
+        
+    except Exception as e:
         return None
 
-def fetch_onbase_document(document_id: str, output_file: str, use_curl: bool = False) -> bool:
-    """
-    Fetch a document from OnBase using either requests or curl.
-    
-    Args:
-        document_id: The OnBase document identifier
-        output_file: Path to save the document
-        use_curl: Use curl command instead of requests library
-        
-    Returns:
-        True if successful, False otherwise
-    """
-    print(f"\nFetching document: {document_id[:50]}...")
-    
-    # Construct the OnBase API URL
-    url = f"{ONBASE_API_URL}/{document_id}/"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br, zstd",
-        "Sec-Fetch-Storage-Access": "none",
-        "Connection": "keep-alive",
-        "Referer": "https://onbasepublic.glastonbury-ct.gov/PavClient/PublicRecordTrafficCount/index.html?OBKey__102_1=MAIN%20ST",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "iframe",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-User": "?1",
-        "Priority": "u=4",
-        "TE": "trailers"
-    }
-    
-    if use_curl:
-        return _fetch_with_curl(url, headers, output_file)
-    else:
-        return _fetch_with_requests(url, headers, output_file)
 
-def _fetch_with_requests(url: str, headers: Dict, output_file: str) -> bool:
-    """Fetch document using requests library."""
+def download_document_pdf(doc_hash: str, output_file: str, street_name: str = "") -> bool:
+    """
+    Download the PDF file using the document hash.
+    Tries multiple methods to get the actual PDF.
+    """
+    
+    output_file = str(output_file)  # Ensure it's a string
+    
     try:
-        # OnBase documents are fetched via GET request (not POST)
+        # Method 1: Get metadata first (POST)
+        metadata = get_document_metadata(doc_hash)
+        
+        if metadata:
+            print(f"   ℹ Metadata: {metadata.get('Size', 'N/A')} bytes, {metadata.get('ViewerMode', 'N/A')}")
+        
+        # Method 2: Try GET request for PDF
+        url = f"{ONBASE_API}/{doc_hash}/"
+        
+        headers = ONBASE_HEADERS.copy()
+        headers["Accept"] = "*/*"  # Accept any content
+        headers["Origin"] = "https://onbasepublic.glastonbury-ct.gov"
+        if street_name:
+            headers["Referer"] = f"https://onbasepublic.glastonbury-ct.gov/PavClient/PublicRecordTrafficCount/index.html?OBKey__102_1={street_name}"
+        
         response = requests.get(
             url,
             headers=headers,
@@ -133,159 +139,200 @@ def _fetch_with_requests(url: str, headers: Dict, output_file: str) -> bool:
             verify=False,
             allow_redirects=True
         )
-        response.raise_for_status()
         
-        # Check if we got a PDF or error JSON
-        content_type = response.headers.get('content-type', '').lower()
+        if response.status_code == 200:
+            content_type = response.headers.get('content-type', '').lower()
+            
+            # Check if we got a PDF
+            if 'application/pdf' in content_type or 'application/octet-stream' in content_type:
+                with open(output_file, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                
+                file_size = Path(output_file).stat().st_size
+                if file_size > 1000:
+                    return True
+                else:
+                    Path(output_file).unlink()
+            elif 'application/json' in content_type:
+                # Try POST method instead
+                pass
         
-        if 'application/json' in content_type or response.text.strip().startswith('{'):
-            # Got JSON error response
-            print(f"✗ API returned error: {response.text[:100]}")
-            return False
-        
-        # Save the document
-        with open(output_file, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-        
-        file_size = Path(output_file).stat().st_size
-        print(f"✓ Saved to {output_file} ({file_size:,} bytes)")
-        return True
-        
-    except Exception as e:
-        print(f"✗ Failed with requests: {e}")
-        return False
-
-def _fetch_with_curl(url: str, headers: Dict, output_file: str) -> bool:
-    """Fetch document using curl command."""
-    try:
-        # Build curl command
-        curl_cmd = ["curl.exe", "-X", "GET"]
-        
-        # Add headers
-        for key, value in headers.items():
-            curl_cmd.extend(["-H", f"{key}: {value}"])
-        
-        # Add output and URL
-        curl_cmd.extend(["-o", output_file])
-        curl_cmd.append(url)
-        
-        # Execute curl
-        result = subprocess.run(
-            curl_cmd,
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT
+        # Method 3: Try POST for PDF (direct body)
+        response = requests.post(
+            url,
+            headers=ONBASE_HEADERS,
+            json={},
+            timeout=TIMEOUT,
+            stream=True,
+            verify=False,
+            allow_redirects=True
         )
         
-        if result.returncode == 0 and Path(output_file).exists():
-            file_size = Path(output_file).stat().st_size
-            print(f"✓ Downloaded with curl ({file_size:,} bytes)")
-            return True
-        else:
-            print(f"✗ curl failed: {result.stderr}")
-            return False
+        if response.status_code == 200:
+            content_type = response.headers.get('content-type', '').lower()
             
+            if 'application/pdf' in content_type or 'application/octet-stream' in content_type:
+                with open(output_file, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                
+                file_size = Path(output_file).stat().st_size
+                if file_size > 1000:
+                    return True
+                else:
+                    Path(output_file).unlink()
+    
     except Exception as e:
-        print(f"✗ Failed with curl: {e}")
-        return False
+        pass
+    
+    return False
 
-def extract_document_ids_from_features(features: List[Dict]) -> List[str]:
-    """
-    Extract OnBase document IDs from feature properties.
-    Looks for common field names that might contain document IDs or links.
-    """
-    document_ids = []
+
+def batch_download(doc_hashes: Dict[str, str]) -> None:
+    """Download multiple documents."""
     
-    for feature in features:
-        props = feature.get("properties", {})
+    print("=" * 70)
+    print(f"📥 DOWNLOADING {len(doc_hashes)} DOCUMENTS")
+    print("=" * 70 + "\n")
+    
+    successful = 0
+    failed = 0
+    
+    for i, (street_name, doc_hash) in enumerate(doc_hashes.items(), 1):
+        output_file = OUTPUT_DIR / f"document_{i:04d}_{street_name[:20]}.pdf"
         
-        # Look for fields that might contain document IDs
-        for field_name, field_value in props.items():
-            if field_value and isinstance(field_value, str):
-                # Check if it looks like an OnBase document ID (long encoded string)
-                if len(field_value) > 50 and any(c in field_value for c in ['%', 'C3', 'C1']):
-                    document_ids.append(field_value)
-                    print(f"Found potential document ID in field '{field_name}'")
+        if output_file.exists():
+            print(f"[{i:3d}/{len(doc_hashes)}] ⏭️  {street_name:40s} (exists)")
+            successful += 1
+            continue
+        
+        print(f"[{i:3d}/{len(doc_hashes)}] 📄 {street_name:40s}...", end=" ", flush=True)
+        
+        if download_document_pdf(doc_hash, str(output_file), street_name):
+            file_size = output_file.stat().st_size / 1024
+            print(f"✅ ({file_size:.1f} KB)")
+            successful += 1
+        else:
+            print(f"❌")
+            failed += 1
+            if output_file.exists():
+                output_file.unlink()
+        
+        time.sleep(0.2)
     
-    return document_ids
+    print(f"\n" + "=" * 70)
+    print(f"Results: {successful} downloaded, {failed} failed")
+    print("=" * 70 + "\n")
 
 def main():
     """Main execution function."""
     parser = argparse.ArgumentParser(
-        description="Fetch traffic data from ArcGIS Experience and OnBase documents"
+        description="Download traffic count PDFs from OnBase (Glastonbury, CT)"
     )
-    parser.add_argument("--doc-id", help="Specific document ID to fetch")
-    parser.add_argument("--use-curl", action="store_true", help="Use curl instead of requests library")
-    parser.add_argument("--batch", action="store_true", help="Process batch mode (load doc IDs from file)")
-    parser.add_argument("--docs-file", default="document_ids.txt", help="File containing document IDs (one per line)")
+    parser.add_argument("--doc-id", help="Specific document hash to fetch")
+    parser.add_argument("--batch", action="store_true", help="Batch download from hashes_file")
+    parser.add_argument("--hashes-file", default="document_hashes.txt", help="File with doc hashes (format: StreetName|DocumentHash)")
+    parser.add_argument("--test", action="store_true", help="Test with known working document")
     
     args = parser.parse_args()
     
-    print("=" * 60)
-    print("Traffic Data Fetcher - ArcGIS + OnBase Integration")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("TRAFFIC COUNT PDF DOWNLOADER - CORRECTED API METHOD")
+    print("=" * 70 + "\n")
     
-    # If specific document ID provided
+    # Test mode with known working document
+    if args.test:
+        print("🧪 Testing with known working document hash...\n")
+        test_hash = "AdzJUwDCr1WBUTV48f%C3%81mNHVPlw%C3%81nk3pnW%C3%818C2UMXr8dOkFC02SXgofIbbgNNkFzRworVow8jJzlWMI%C3%81pn1Rtm8k%3D"
+        test_file = OUTPUT_DIR / "test_document.pdf"
+        
+        print("📄 Fetching metadata...")
+        metadata = get_document_metadata(test_hash)
+        
+        if metadata:
+            print(f"✅ Got metadata:")
+            print(f"   ID: {metadata.get('ID', 'N/A')[:50]}...")
+            print(f"   Size: {metadata.get('Size', 'N/A')} bytes")
+            print(f"   Type: {metadata.get('ViewerMode', 'N/A')}")
+            print(f"   Download Threshold: {metadata.get('IsAboveDownloadThreshold', 'N/A')}\n")
+            
+            print("📥 Downloading PDF...")
+            if download_document_pdf(test_hash, str(test_file), "MAIN ST"):
+                file_size = test_file.stat().st_size / 1024
+                print(f"✅ Successfully downloaded ({file_size:.1f} KB)\n")
+            else:
+                print("❌ Failed to download PDF\n")
+        else:
+            print("❌ Failed to get metadata\n")
+        
+        return 0
+    
+    # Single document fetch
     if args.doc_id:
         output_file = OUTPUT_DIR / f"document_{hash(args.doc_id) % 10000}.pdf"
-        fetch_onbase_document(args.doc_id, str(output_file), use_curl=args.use_curl)
-        return
+        print(f"📥 Downloading document: {args.doc_id[:50]}...\n")
+        if download_document_pdf(args.doc_id, str(output_file)):
+            print(f"\n✅ Downloaded to {output_file}\n")
+        else:
+            print(f"\n❌ Failed to download\n")
+        return 0
     
     # Batch mode
-    if args.batch and Path(args.docs_file).exists():
-        print(f"\nProcessing documents from {args.docs_file}...")
-        with open(args.docs_file, 'r') as f:
-            doc_ids = [line.strip() for line in f if line.strip()]
+    if args.batch:
+        if not Path(args.hashes_file).exists():
+            print(f"❌ File not found: {args.hashes_file}\n")
+            print("Format: Each line should contain:")
+            print("  StreetName|DocumentHash")
+            print("\nExample:")
+            print("  MAIN ST|AdzJUwDCr1WBUTV48f%C3%81mNHVPlw...")
+            return 1
         
-        print(f"Found {len(doc_ids)} document IDs")
-        for i, doc_id in enumerate(doc_ids, 1):
-            print(f"\n[{i}/{len(doc_ids)}]", end="")
-            output_file = OUTPUT_DIR / f"document_{i:04d}.pdf"
-            fetch_onbase_document(doc_id, str(output_file), use_curl=args.use_curl)
-            time.sleep(1)  # Rate limiting
-        return
+        # Read document hashes
+        doc_hashes = {}
+        with open(args.hashes_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                
+                if '|' in line:
+                    street, doc_hash = line.split('|', 1)
+                    doc_hashes[street.strip()] = doc_hash.strip()
+        
+        if not doc_hashes:
+            print(f"❌ No document hashes found in {args.hashes_file}\n")
+            return 1
+        
+        batch_download(doc_hashes)
+        
+        print("=" * 70)
+        print("Summary")
+        print("=" * 70)
+        print(f"Documents processed: {len(doc_hashes)}")
+        print(f"Output directory: {OUTPUT_DIR.absolute()}")
+        pdf_files = list(OUTPUT_DIR.glob("document_*.pdf"))
+        print(f"PDFs created: {len(pdf_files)}")
+        
+        return 0
     
-    # Default: Fetch ArcGIS data
-    print("\nFetching ArcGIS Experience data...")
+    # Default: Show help
+    print("📖 Usage:\n")
+    print(f"  {Path(__file__).name} --test")
+    print(f"    Test with known working document\n")
+    print(f"  {Path(__file__).name} --doc-id <hash>")
+    print(f"    Download single document\n")
+    print(f"  {Path(__file__).name} --batch")
+    print(f"    Batch download from {args.hashes_file}\n")
+    print("Example hashes_file format:")
+    print("  # Comment line")
+    print("  MAIN ST|AdzJUwDCr1WBUTV48f%C3%81...")
+    print("  CHURCH ST|BxzKVyFdS2XCVUW59g%D4%92...")
     
-    arcgis_data = fetch_arcgis_data()
-    if arcgis_data:
-        config_file = OUTPUT_DIR / "arcgis_config.json"
-        with open(config_file, 'w') as f:
-            json.dump(arcgis_data, f, indent=2)
-        print(f"✓ Saved to {config_file}")
-    
-    feature_data = fetch_feature_service_data()
-    if feature_data:
-        features_file = OUTPUT_DIR / "features.json"
-        with open(features_file, 'w') as f:
-            json.dump(feature_data, f, indent=2)
-        print(f"✓ Saved to {features_file}")
-    
-    # Example document fetch
-    example_doc_id = "AdzJUwDCr1WBUTV48f%C3%81mNHVPlw%C3%81nk3pnW%C3%818C2UMXr8dOkFC02SXgofIbbgNNkFzRworVow8jJzlWMI%C3%81pn1Rtm8k%3D"
-    
-    print("\n" + "=" * 60)
-    print("Attempting to fetch sample document from OnBase...")
-    print("=" * 60)
-    
-    output_file = OUTPUT_DIR / "sample_document.pdf"
-    success = fetch_onbase_document(example_doc_id, str(output_file), use_curl=args.use_curl)
-    
-    print("\n" + "=" * 60)
-    print("Summary")
-    print("=" * 60)
-    print(f"Output directory: {OUTPUT_DIR.absolute()}")
-    print("\nUsage examples:")
-    print("  python fetch_traffic_data.py")
-    print("  python fetch_traffic_data.py --doc-id '<document-id>'")
-    print("  python fetch_traffic_data.py --batch --docs-file document_ids.txt")
-    print("  python fetch_traffic_data.py --use-curl")
+    return 0
+
 
 if __name__ == "__main__":
-    main()
-
-if __name__ == "__main__":
-    main()
+    sys.exit(main())
